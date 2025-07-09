@@ -39,7 +39,6 @@ class Decoder(nn.Module):
     def __init__(self, layer_sizes, dx, activation, structure):
         super().__init__()
         
-        
         self.structure = structure
         self.activation = activation    
         self.dx = dx    
@@ -51,7 +50,6 @@ class Decoder(nn.Module):
             nn.init.zeros_(layer.bias)
             self.linears.append(layer)
 
-        
     def forward(self, x):        
         
         for linear in self.linears[:-1]:
@@ -67,6 +65,10 @@ class Decoder(nn.Module):
 class VAE(nn.Module):
     def __init__(self, layer_sizes_enc, layer_sizes_dec, dx, activation, structure=True):
         super().__init__()
+        
+        self.layer_sizes_enc = layer_sizes_enc
+        self.layer_sizes_dec = layer_sizes_dec
+        self.activation_str = activation
         
         activation = {
             'relu' : nn.ReLU(), 
@@ -122,8 +124,19 @@ class Model():
 
             if iter % val_interval == val_interval - 1: 
                 print(f"{iter + 1:<10} {f'{loss.item():.2e}':<10} {f'{recon_loss:.2e}':<10} {f'{kl_loss:.2e}'}")
-
+                
+        torch.save({
+            'model_args': {
+                'layer_sizes_enc': self.net.layer_sizes_enc,
+                'layer_sizes_dec': self.net.layer_sizes_dec,
+                'dx': self.net.decoder.dx,
+                'activation': self.net.activation_str,
+                'structure': self.net.decoder.structure
+            },
+            'state_dict': self.net.state_dict()
+        }, 'VAE.pth')
         self.net.eval()
+        
 
 
 def generate_leaks(grid, num_leaks, random_state):

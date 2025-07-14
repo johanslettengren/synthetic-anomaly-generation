@@ -10,10 +10,10 @@ from sklearn.gaussian_process.kernels import Matern, RBF
 
 # # Physical parameters
 beta = 1 #2.2e9 
-A = 1 #0.95        
-rho = 1 #1000         
-F = 1 #50            
-L = 1 #24e3        
+A = 0.95        
+rho = 1000         
+F = 50            
+L = 100 #24e3        
 Nz = 200
 h = L / Nz
 
@@ -22,7 +22,7 @@ NX = 10
 g = 9.81
 
 # Time span
-t0, tmax = 0, 10
+t0, tmax = 0, 1
 
 Nt = 50
 t_eval = np.linspace(t0, tmax, Nt)
@@ -43,8 +43,8 @@ def solve(q0, pl, d, X):
         q = y[:Nz]
         p = y[Nz:]
         
-        q = np.append(q0(t), q)
-        p = np.append(p, pl(t))
+        q = np.append(q0(t), q) 
+        p = np.append(p, pl(t)) / 1e5
         
         p_rhs = - (beta / A) * (q[1:] - q[:-1]) / h - (beta / A) * d * X        
         q_rhs = - (A / rho) * (p[1:] - p[:-1]) / h - (F / rho) * q[1:] - (1 / A) * d * X**2
@@ -54,7 +54,7 @@ def solve(q0, pl, d, X):
     # Solve the system
     y0 = initial_conditions()
 
-    return solve_ivp(pq_rhs, [t0, tmax], y0, t_eval=t_eval, method='RK45')
+    return solve_ivp(pq_rhs, [t0, tmax], y0, t_eval=t_eval, method='RK45',)
 
 
 class branch(nn.Module):

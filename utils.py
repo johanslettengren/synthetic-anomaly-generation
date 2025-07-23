@@ -10,10 +10,10 @@ from sklearn.gaussian_process.kernels import Matern, RBF
 
 # # Physical parameters
 beta = 1 #2.2e9 
-A = 0.95        
-rho = 1000         
-F = 50            
-L = 100 #24e3        
+A = 1        
+rho = 1         
+F = 1            
+L = 1        
 Nz = 200
 h = L / Nz
 
@@ -22,12 +22,15 @@ NX = 10
 g = 9.81
 
 # Time span
-t0, tmax = 0, 1
+t0, tmax = 0, 10
 
 Nt = 50
 t_eval = np.linspace(t0, tmax, Nt)
 
 phi = lambda z : torch.zeros_like(z)
+
+
+bias = torch.tensor([50, 50])
 
 def solve(q0, pl, d, X):
     

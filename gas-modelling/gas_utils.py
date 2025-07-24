@@ -8,14 +8,18 @@ import itertools
 from numpy import pi
 from scipy.constants import g
 
+softplus = nn.Softplus()
+
 
 class Net(nn.Module):
 
-    def __init__(self, K, dim_out, layer_sizes, activation):
+    def __init__(self, K, dim_out, layer_sizes, activation, positive=False):
         super().__init__()
         
+        self.positive = positive
         self.activation = activation
         self.networks = nn.ModuleList()
+        
         
         layer_sizes = layer_sizes + [dim_out*K]
         
@@ -23,7 +27,7 @@ class Net(nn.Module):
         for i in range(1, len(layer_sizes)):
             layer = nn.Linear(layer_sizes[i - 1], layer_sizes[i])
             nn.init.xavier_normal_(layer.weight)
-            nn.init.zeros_(layer.bias)
+            #nn.init.zeros_(layer.bias)
             self.linears.append(layer)
             
         self.networks.append(self.linears)
@@ -34,47 +38,49 @@ class Net(nn.Module):
             x = self.activation(linear(x))
         x = self.linears[-1](x)
 
+        if self.positive:
+            x = softplus(x)
         return x
         
         
-class DeepONet(nn.Module):
-    def __init__(self, dim_out, K, layer_sizes_trunk, layer_sizes_branch, activation='tanh'):
-        super().__init__()
+# class DeepONet(nn.Module):
+#     def __init__(self, dim_out, K, layer_sizes_trunk, layer_sizes_branch, activation='tanh', positive=False):
+#         super().__init__()
 
-        activation = {'relu' : nn.ReLU(), 'tanh' : nn.Tanh(), 'sigmoid' : nn.Sigmoid()}[activation] 
+#         activation = {'relu' : nn.ReLU(), 'tanh' : nn.Tanh(), 'sigmoid' : nn.Sigmoid()}[activation] 
         
-        self.K = K
-        self.dim_out = dim_out
-        self.trunk = Net(K=K, dim_out=1, layer_sizes=layer_sizes_trunk, activation=activation)
-        self.branch = Net(K=K, dim_out=dim_out, layer_sizes=layer_sizes_branch, activation=activation)
+#         self.K = K
+#         self.dim_out = dim_out
+#         self.trunk = Net(K=K, dim_out=1, layer_sizes=layer_sizes_trunk, activation=activation, positive=positive)
+#         self.branch = Net(K=K, dim_out=dim_out, layer_sizes=layer_sizes_branch, activation=activation, positive=positive)
         
         
-    def forward(self, t, param):                
+#     def forward(self, t, param):                
 
-        a = self.trunk(t)
-        B = self.branch(param).view(-1, self.K, self.dim_out)
-        out = torch.einsum("pkd,tk->tpd", B, a)
+#         a = self.trunk(t)
+#         B = self.branch(param).view(-1, self.K, self.dim_out)
+#         out = torch.einsum("pkd,tk->tpd", B, a)
 
-        return out
+#         return out
     
-    def derivative(self, t, param):                
+#     def derivative(self, t, param):                
 
-        a = self.trunk(t)
-        dadt = torch.cat([
-            torch.autograd.grad(a[...,i], t, grad_outputs=torch.ones_like(a[...,0]), create_graph=True)[0] for i in range(self.K)
-        ], dim=-1)
+#         a = self.trunk(t)
+#         dadt = torch.cat([
+#             torch.autograd.grad(a[...,i], t, grad_outputs=torch.ones_like(a[...,0]), create_graph=True)[0] for i in range(self.K)
+#         ], dim=-1)
         
         
-        B = self.branch(param).view(-1, self.K, self.dim_out)
-        out = torch.einsum("pkd,tk->tpd", B, dadt).reshape(-1, self.dim_out)
+#         B = self.branch(param).view(-1, self.K, self.dim_out)
+#         out = torch.einsum("pkd,tk->tpd", B, dadt)
 
-        return out
+#         return out
     
 
 class Model():
     def __init__(self, model_params, net_params, method='endpoint'):  
         
-        required_keys = ['A0', 'd', 'd0', 'L', 'hL', 'hR', 'lambda0', 'T_max', 'Kl_max', 'n_samples']
+        required_keys = ['A0', 'sp', 'Bs', 'dq', 'Bd', 'd', 'L', 'hL', 'hR', 'a', 'f', 'T_max', 'Kl_max', 'n_samples']
 
         # Assert all required keys are present
         missing = [key for key in required_keys if key not in model_params]
@@ -85,17 +91,13 @@ class Model():
         for key in required_keys:
             setattr(self, key, model_params[key])
             
-        self.S = pi * self.d**2 / 4
-        
+                    
         self.A0_abs = torch.abs(self.A0)
         self.A0_R = ( self.A0 + torch.abs(self.A0) ) / 2
         
-        self.Dp = - 1 / ( self.L * self.S )
-        self.Dq =  - self.S / self.L
-        self.Dg = g * (self.hR - self.hL)
-        self.Df = self.lambda0 / (2 * self.d * self.S)
+        self.Dh = self.hR - self.hL
         
-        self.pnet = DeepONet(self.A0.shape[0], **net_params)
+        self.pnet = DeepONet(self.A0.shape[0], **net_params, positive=False)
         self.qnet = DeepONet(self.A0.shape[1], **net_params)
         
         params = itertools.chain(self.pnet.parameters(), self.qnet.parameters())
@@ -113,30 +115,41 @@ class Model():
 
 
     def mv(self, A, v):
-        return (A @ v.T).T
+        v_ = v.reshape(-1, v.shape[-1])
+        return (A @ v_.T).T.reshape(v.shape[0], v.shape[1], -1)
 
     def midpoint_loss(self, t, p):
         pass
     
     def endpoint_loss(self, t, param):
+        
+        t = torch.zeros_like(t, requires_grad=True)
         p = self.pnet(t, param)
         q = self.qnet(t, param)
         
+        
         pdot = self.pnet.derivative(t, param)
         qdot = self.qnet.derivative(t, param)
+                
+        t1 = self.mv(self.A0_R, self.L * self.mv(self.A0_R.T, pdot)) 
+        t2 = - self.a**2 * (self.mv(self.A0, q)) / g # +  param * torch.sqrt(p)) / g
+        t3 = self.a**2 * self.Bd @ self.dq / g
+        t4 = - g * self.mv(self.A0_R, self.Dh * q)
         
-        res1 = self.mv(self.A0_R, ( self.d0 * self.mv(self.A0_R.T, pdot) / self.Dp )) + self.mv(self.A0, q) # NEXT UP
+        s1 = g * (self.mv(self.A0.T, p) + self.Bs.T @ self.sp) / self.L
+        s2 = self.f * q**2 / (2 * self.d)
         
-        e1 = self.mse(res1)
+        e1 = self.mse(t1 + t2 + t3 + t4)
+        e2 = self.mse(qdot + s1 + s2)
         
-        return e1, torch.tensor(0.0, requires_grad=True)
+        return e1, e2
 
             
     def train(self, iterations, print_interval=100):
         self.steps = []
         self.qnet.train(True)
         self.pnet.train(True)
-        print(f"{'step':<10} {'loss':<10} {'r1':<10}  {'r2'}")
+        print(f"{'step':<10} {'loss':<10} {'e1':<10}  {'e2'}")
         
         for iter in range(iterations):
             t = self.T_max * torch.rand((self.n_samples, 1), requires_grad=True)
@@ -144,12 +157,19 @@ class Model():
                                     
             self.optimizer.zero_grad()
             e1, e2 = self.loss(t, p)
-            loss = e1 + e2
+            
+            if iter % 2 == 0:
+                loss = e1
+            else: 
+                loss = e2
+                
+            vloss = e1 + e2
             loss.backward()
             self.optimizer.step()
-
+            
+            announce = ''
             if iter % print_interval == print_interval - 1:           
-                if loss < self.bestloss:
+                if vloss < self.bestloss:
                     torch.save({
                         'pnet_state_dict': self.pnet.state_dict(),
                         'qnet_state_dict': self.qnet.state_dict(),
@@ -157,13 +177,15 @@ class Model():
                     self.bestloss = loss
                     self.pnet.train(True)
                     self.qnet.train(True)
+                    
+                    announce = 'New Best!'
                                 
-                fstring = f"{iter + 1:<10} {f'{loss:.2e}':<10} {f'{r1:.2e}':<10} {f'{r2:.2e}':<15}"
+                fstring = f"{iter + 1:<10} {f'{vloss:.2e}':<10} {f'{e1:.2e}':<10} {f'{e2:.2e}':<15} {announce}"
                 print(fstring)
                 
         print('Best loss:', self.bestloss)
         
-        checkpoint = torch.load("best_model.pth")
+        checkpoint = torch.load("best_model.pth", weights_only=False)
         self.pnet.load_state_dict(checkpoint['pnet_state_dict'])
         self.qnet.load_state_dict(checkpoint['qnet_state_dict'])
         self.pnet.eval()

@@ -8,15 +8,15 @@
 ; JUNCTION-2        0           	50           	                	;
 
 [RESERVOIRS]
-;ID              	Elev    Head        	Pattern         
- RESERVOIR          50      50   	                	;
+;ID              Head        	Pattern         
+ RESERVOIR       50   	                	;
 
 [TANKS]
 ;ID              	Elevation   	InitLevel   	MinLevel    	MaxLevel    	Diameter    	MinVol      	VolCurve
 
 [PIPES]
 ;ID              	Node1           	Node2           	Length      	Diameter    	Roughness   	MinorLoss   	Status
- PIPE-0             RESERVOIR           JUNCTION-0          1200            1000         	0.045        	    0           	Open  	;
+ PIPE-0             RESERVOIR           JUNCTION-0          1200            1000         	100        	    0           	Open  	;
 ; PIPE-1            JUNCTION-0          JUNCTION-1          2400         	1000        	0.045         	0           	Open  	;
 
 [PUMPS]
@@ -97,7 +97,7 @@
 
 [OPTIONS]
  Units              	LPS
- Headloss           	D-W
+ Headloss           	H-W
  Specific Gravity   	1
  Viscosity          	1
  Trials             	40

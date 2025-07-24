@@ -13,15 +13,15 @@ softplus = nn.Softplus()
 
 class Net(nn.Module):
 
-    def __init__(self, K, dim_out, layer_sizes, activation, positive=False):
+    def __init__(self, dim_out, layer_sizes, activation, positive=False):
         super().__init__()
         
         self.positive = positive
-        self.activation = activation
+        self.activation = {'relu' : nn.ReLU(), 'tanh' : nn.Tanh(), 'sigmoid' : nn.Sigmoid()}[activation] 
         self.networks = nn.ModuleList()
         
         
-        layer_sizes = layer_sizes + [dim_out*K]
+        layer_sizes = layer_sizes + [dim_out]
         
         self.linears = nn.ModuleList()
         for i in range(1, len(layer_sizes)):
@@ -97,8 +97,8 @@ class Model():
         
         self.Dh = self.hR - self.hL
         
-        self.pnet = DeepONet(self.A0.shape[0], **net_params, positive=False)
-        self.qnet = DeepONet(self.A0.shape[1], **net_params)
+        self.pnet = Net(self.A0.shape[0], **net_params, positive=True)
+        self.qnet = Net(self.A0.shape[1], **net_params)
         
         params = itertools.chain(self.pnet.parameters(), self.qnet.parameters())
 
@@ -121,26 +121,24 @@ class Model():
     def midpoint_loss(self, t, p):
         pass
     
-    def endpoint_loss(self, t, param):
+    def endpoint_loss(self, param):
         
-        t = torch.zeros_like(t, requires_grad=True)
-        p = self.pnet(t, param)
-        q = self.qnet(t, param)
+        p = self.pnet(param)
+        q = self.qnet(param)
         
-        
-        pdot = self.pnet.derivative(t, param)
-        qdot = self.qnet.derivative(t, param)
+        # pdot = self.pnet.derivative(param)
+        # qdot = self.qnet.derivative(param)
                 
-        t1 = self.mv(self.A0_R, self.L * self.mv(self.A0_R.T, pdot)) 
-        t2 = - self.a**2 * (self.mv(self.A0, q)) / g # +  param * torch.sqrt(p)) / g
+        #t1 = self.mv(self.A0_R, self.L * self.mv(self.A0_R.T, pdot)) 
+        t2 = - self.a**2 * (self.mv(self.A0, q) +  param * torch.sqrt(p)) / g
         t3 = self.a**2 * self.Bd @ self.dq / g
         t4 = - g * self.mv(self.A0_R, self.Dh * q)
         
-        s1 = g * (self.mv(self.A0.T, p) + self.Bs.T @ self.sp) / self.L
-        s2 = self.f * q**2 / (2 * self.d)
+        s1 = g * (-self.mv(self.A0.T, p) + self.Bs.T @ self.sp) 
+        s2 =  10.67 * q**(1.852) / (self.f**(1.852) * self.d**(4.87)) 
         
-        e1 = self.mse(t1 + t2 + t3 + t4)
-        e2 = self.mse(qdot + s1 + s2)
+        e1 = self.mse(t2 + t3 + t4)
+        e2 = self.mse(s1 + s2)
         
         return e1, e2
 
@@ -156,7 +154,7 @@ class Model():
             p = self.Kl_max * torch.rand((self.n_samples, 1))
                                     
             self.optimizer.zero_grad()
-            e1, e2 = self.loss(t, p)
+            e1, e2 = self.loss(p)
             
             if iter % 2 == 0:
                 loss = e1

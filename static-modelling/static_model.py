@@ -18,7 +18,6 @@ class Net(nn.Module):
         
         self.positive = positive
         self.activation = {'relu' : nn.ReLU(), 'tanh' : nn.Tanh(), 'sigmoid' : nn.Sigmoid()}[activation] 
-        self.networks = nn.ModuleList()
         
         
         layer_sizes = [dim_in] + layer_sizes
@@ -27,17 +26,16 @@ class Net(nn.Module):
         for i in range(1, len(layer_sizes)):
             layer = nn.Linear(layer_sizes[i - 1], layer_sizes[i])
             nn.init.xavier_normal_(layer.weight)
-            nn.init.zeros_(layer.bias)
+            nn.init.constant_(layer.bias, 0.01)
             self.linears.append(layer)
             
-        self.networks.append(self.linears)
         
     def forward(self, x):
 
         for linear in self.linears[:-1]:
+
             x = self.activation(linear(x))
         x = self.linears[-1](x)
-
         if self.positive:
             x = softplus(x)
         return x
@@ -119,8 +117,8 @@ class Model():
         for key in required_keys:
             setattr(self, key, model_params[key])
                     
-        self.net = GNN(self.A0, self.D, self.B, self.S, **net_params)
-    
+        #self.net = GNN(self.A0, self.D, self.B, self.S, **net_params)
+        self.net = Net(self.A0.shape[0], **net_params, positive=False)
         
         #params = itertools.chain(self.Hnet.parameters(), self.qnet.parameters())
         
@@ -137,13 +135,14 @@ class Model():
         return torch.sign(q) * 10.667 * self.C**(-1.852) * self.d**(-4.871) * self.L * torch.abs(q)**(1.852)
     
     def d_leak(self, A, H):
-        return self.Cd * A * torch.sqrt(2 * self.d * torch.abs(H) + 1e-3)
+        d = self.Cd * A * torch.sqrt(2 * g * torch.abs(H))
+        return d
     
     def mv(self, M, v):
         v_ = v.reshape(-1, v.shape[-1])
         return (M @ v_.T).T.reshape(v.shape[0], v.shape[1], -1)
 
-    def loss(self, a):
+    def loss_(self, a):
                 
         H, q = self.net(a)
     
@@ -153,6 +152,15 @@ class Model():
         e2 = self.mse(self.B @ self.S - self.mv(self.A0.T, H) - self.hL(q))
         
         return e1, e2
+    
+    def loss(self, A):
+        
+        H = self.net(A)
+        hL = (self.B @ self.S)[None,:None] - self.mv(self.A0.T, H).squeeze(-1)
+
+        q = (torch.sign(hL) * (torch.abs(hL) * self.C[None,:]**(1.852) * self.d[None,:]**(4.871) / 10.667 / self.L[None,:])**(1 / 1.852))
+        loss = self.mse(self.mv(self.A0, q) - self.D[None,:] - self.d_leak(A, H))
+        return loss 
 
             
     def train(self, iterations, print_interval=100):
@@ -161,29 +169,31 @@ class Model():
         print(f"{'step':<10} {'loss':<10} {'e1':<10}  {'e2'}")
         
         for iter in range(iterations):
-            A = torch.linspace(0, self.A_max, self.n_samples).reshape(-1, 1)
+            A = torch.linspace(self.A_max, self.A_max, self.n_samples).reshape(-1, 1)
             
                                     
+                                    
             self.optimizer.zero_grad()
-            e1, e2 = self.loss(A)
-            loss = (e1 / (e1.detach() + e2.detach())) * e1 + (e2 / (e1.detach() + e2.detach())) * e2
+            loss = self.loss(A)
+            #loss = (e1 / (e1.detach() + e2.detach())) * e1 + (e2 / (e1.detach() + e2.detach())) * e2
                 
-            vloss = e1 + e2
             loss.backward()
+            vloss = loss.item()
+
             self.optimizer.step()
             
             announce = ''
             if iter % print_interval == print_interval - 1:           
                 if vloss < self.bestloss:
-                    #torch.save(self.net.state_dict(), "best_model.pth")    
+                    torch.save(self.net.state_dict(), "best_model.pth")    
                     self.bestloss = loss
                     
                     announce = 'New Best!'
-                                
-                fstring = f"{iter + 1:<10} {f'{vloss:.2e}':<10} {f'{e1:.2e}':<10} {f'{e2:.2e}':<15} {announce}"
+                # {f'{e1:.2e}':<10} {f'{e2:.2e}':<15}                
+                fstring = f"{iter + 1:<10} {f'{vloss:.2e}':<10} {announce}"
                 print(fstring)
                 
-        #print('Best loss:', self.bestloss)
+        print('Best loss:', self.bestloss)
         
-        #self.net.load_state_dict(torch.load("best_model.pth", weights_only=True))
-        #self.net.eval()
+        self.net.load_state_dict(torch.load("best_model.pth", weights_only=True))
+        self.net.eval()

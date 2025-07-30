@@ -135,7 +135,12 @@ class Model():
         return torch.sign(q) * 10.667 * self.C**(-1.852) * self.d**(-4.871) * self.L * torch.abs(q)**(1.852)
     
     def d_leak(self, A, H):
+        
         d = self.Cd * A * torch.sqrt(2 * g * torch.abs(H))
+        #print(self.Cd)
+        #print(A.shape)
+        #print(H.shape)
+        #print(d.shape)
         return d
     
     def mv(self, M, v):
@@ -159,7 +164,7 @@ class Model():
         hL = (self.B @ self.S)[None,:None] - self.mv(self.A0.T, H).squeeze(-1)
 
         q = (torch.sign(hL) * (torch.abs(hL) * self.C[None,:]**(1.852) * self.d[None,:]**(4.871) / 10.667 / self.L[None,:])**(1 / 1.852))
-        loss = self.mse(self.mv(self.A0, q) - self.D[None,:] - self.d_leak(A, H))
+        loss = self.mse(self.mv(self.A0, q).squeeze(-1) - self.D[None,:] - self.d_leak(A, H))
         return loss 
 
             
@@ -169,14 +174,11 @@ class Model():
         print(f"{'step':<10} {'loss':<10} {'e1':<10}  {'e2'}")
         
         for iter in range(iterations):
-            A = torch.linspace(self.A_max, self.A_max, self.n_samples).reshape(-1, 1)
-            
+            A = torch.linspace(0, self.A_max, self.n_samples).reshape(-1, 1).requires_grad_()   
                                     
                                     
             self.optimizer.zero_grad()
             loss = self.loss(A)
-            #loss = (e1 / (e1.detach() + e2.detach())) * e1 + (e2 / (e1.detach() + e2.detach())) * e2
-                
             loss.backward()
             vloss = loss.item()
 

@@ -3,8 +3,8 @@
 
 [JUNCTIONS]
 ;ID              	Elev        	Demand      	Pattern         
- JUNCTION-0         0           	50             	                	;
-;JUNCTION-1         0           	50          	                	;
+ LEAK-0             0           	0             	                	;
+ JUNCTION-0         0           	50          	                	    ;
 ;JUNCTION-2         0           	50           	                	;
 
 [RESERVOIRS]
@@ -16,8 +16,8 @@
 
 [PIPES]
 ;ID              	Node1           	Node2           	Length      	Diameter    	Roughness   	MinorLoss   	Status
- PIPE-0             RESERVOIR           JUNCTION-0          1200            1000         	100        	    0           	Open  	;
-;PIPE-1             JUNCTION-0          JUNCTION-1          1200         	1000        	100         	0           	Open  	;
+ PIPE-0             RESERVOIR           LEAK-0              1200            1000         	100        	    0           	Open  	;
+ PIPE-1             LEAK-0              JUNCTION-0          1200         	1000        	100         	0           	Open  	;
 
 [PUMPS]
 ;ID              	Node1           	Node2           	Parameters
@@ -115,8 +115,8 @@
 
 [COORDINATES]
 ;Node            	X-Coord         	Y-Coord
- JUNCTION-0         -1167.70        	8919.75         
-;JUNCTION-1         293.21          	8919.75         
+ LEAK-0             -1167.70        	8919.75         
+ JUNCTION-0         293.21          	8919.75         
 ;JUNCTION-2         704.78          	8886.13         
  RESERVOIR          -2319.96        	8909.47         
 

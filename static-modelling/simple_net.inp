@@ -3,9 +3,7 @@
 
 [JUNCTIONS]
 ;ID              	Elev        	Demand      	Pattern         
- LEAK-0             0           	0             	                	;
- JUNCTION-0         0           	50          	                	    ;
-;JUNCTION-2         0           	50           	                	;
+ DEMAND-0           0           	50          	                	    ;
 
 [RESERVOIRS]
 ;ID              Head        	Pattern         
@@ -16,8 +14,7 @@
 
 [PIPES]
 ;ID              	Node1           	Node2           	Length      	Diameter    	Roughness   	MinorLoss   	Status
- PIPE-0             RESERVOIR           LEAK-0              1200            1000         	100        	    0           	Open  	;
- PIPE-1             LEAK-0              JUNCTION-0          1200         	1000        	100         	0           	Open  	;
+ PIPE-0             RESERVOIR           DEMAND-0            1200            1000         	100        	    0           	Open  	;
 
 [PUMPS]
 ;ID              	Node1           	Node2           	Parameters
@@ -115,22 +112,9 @@
 
 [COORDINATES]
 ;Node            	X-Coord         	Y-Coord
- LEAK-0             -1167.70        	8919.75         
- JUNCTION-0         293.21          	8919.75         
-;JUNCTION-2         704.78          	8886.13         
- RESERVOIR          -2319.96        	8909.47         
-
-[VERTICES]
-;Link            	X-Coord         	Y-Coord
-
-[LABELS]
-;X-Coord           Y-Coord          Label & Anchor Node
- -2423.20         9069.59          "Reservoir"                 
- -1705.20         8870.76          "Pipe1"                 
- -468.04          8881.81          "Pipe2"                 
- -1208.13         9043.82          "Junc2"                 
- 231.48           9053.50          "Junc3"                 
- 612.95           9040.58          "Junc4"                 
+ RESERVOIR          0        	        0 
+ DEMAND-0           0          	        -20                
+                     
 
 [BACKDROP]
  DIMENSIONS     	0.00            	0.00            	10000.00        	10000.00        

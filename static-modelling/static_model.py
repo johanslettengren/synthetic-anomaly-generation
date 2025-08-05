@@ -11,23 +11,22 @@ import itertools
 from numpy import pi
 from scipy.constants import g
 
-import torch.nn.functional as F
 
 softplus = nn.Softplus()
+relu = nn.ReLU()
 
-def abs_(x, epsilon=1e-4):
-    return torch.abs(x)
 
 class Net(nn.Module):
 
-    def __init__(self, dim_in, layer_sizes, activation, positive=False):
+    def __init__(self, layer_sizes, activation, base, positive=False):
         super().__init__()
         
         self.positive = positive
+        self.base = torch.tensor(base[None,:], dtype=torch.float32)
         self.activation = {'relu' : nn.ReLU(), 'tanh' : nn.Tanh(), 'sigmoid' : nn.Sigmoid(), 'softplus' : softplus}[activation] 
         
         
-        layer_sizes = [dim_in] + layer_sizes
+        layer_sizes = layer_sizes
         
         self.linears = nn.ModuleList()
         for i in range(1, len(layer_sizes)):
@@ -45,13 +44,14 @@ class Net(nn.Module):
         x = self.linears[-1](x)
         if self.positive:
             x = softplus(x)
-        return x
+
+        return self.base + x
     
 
 class Model():
     def __init__(self, model_params, net_params):  
         
-        required_keys = ['A0', 'inv', 'M', 'B', 'A_max', 'S', 'D', 'L', 'd', 'Cd', 'C', 'rho', 'n_samples']
+        required_keys = ['A0', 'inv', 'M', 'B', 'a_max', 'S', 'D', 'L', 'd', 'Cd', 'C', 'rho', 'n_samples']
 
         # Assert all required keys are present
         missing = [key for key in required_keys if key not in model_params]
@@ -61,12 +61,16 @@ class Model():
         # Assign attributes
         for key in required_keys:
             setattr(self, key, model_params[key])
+            
+        self.L = self.L[None,:]
+        self.D = self.D[None,:]
+        self.d = self.d[None,:]
+        self.C = self.C[None,:]
+        self.supply = (self.B @ self.S)[None,:]
+        
+        self.n_pipes = self.M.shape[1]
                     
-        #self.net = GNN(self.A0, self.D, self.B, self.S, **net_params)
-        self.net = Net(self.A0.shape[1], **net_params, positive=True)
-        
-        #params = itertools.chain(self.Hnet.parameters(), self.qnet.parameters())
-        
+        self.net = Net(**net_params)        
                 
         optimizer = torch.optim.Adam
         self.optimizer = optimizer(self.net.parameters(), lr=0.001)
@@ -77,42 +81,24 @@ class Model():
         self.mse = lambda x : (x**2).mean()
 
     def hL(self, q):
-        return torch.sign(q) * 10.667 * self.C**(-1.852) * self.d**(-4.871) * self.L * abs_(q)**(1.852)
+        return torch.sign(q) * 10.667 * self.C**(-1.852) * self.d**(-4.871) * self.L * torch.abs(q)**(1.852)
     
-    def d_leak(self, A, H):
-        
-        d = torch.sign(qself.Cd * A * torch.sqrt(2 * g * abs_(H))
-        return d. 
-    
+    def d_leak(self, a, H):
+        d = self.Cd * a * torch.sqrt(2 * g * relu(H))
+        return d
     
     def mv(self, M, v):
-        v_ = v.reshape(-1, v.shape[-1])
-        return (M @ v_.T).T.reshape(v.shape[0], v.shape[1], -1)
-    
+        return (M @ v.T).T
 
-    
-    def loss_(self, a):
-        
-        H = self.net(a)
-            
-        hL = (self.B @ self.S)[None,:None] - self.mv(self.A0.T, H).squeeze(-1)
-        
-
-        q = (torch.sign(hL) * (abs_(hL) * self.C[None,:]**(1.852) * self.d[None,:]**(4.871) / 10.667 / self.L[None,:])**(1 / 1.852))
-        loss = self.mse(self.mv(self.A0, q).squeeze(-1) - self.D[None,:] - (self.M @ self.d_leak(a, (self.M.T @ H.T).T).T).T)
-        
-        return loss 
     
     def loss(self, a):
         
         q = self.net(a)
         
-        hL = self.hL(q)
+        hL = self.hL(q)    
+        H = self.mv(self.inv, self.supply - hL)
         
-                
-        H = (self.inv @ ((self.B @ self.S)[None,:] - hL).T).T
-        
-        loss = self.mse(self.mv(self.A0, q).squeeze(-1) - self.D[None,:] - self.d_leak(a,H))
+        loss = self.mse(self.mv(self.A0, q) - self.D - self.d_leak(self.mv(self.M, a), H))
         
         return loss 
 
@@ -124,13 +110,12 @@ class Model():
         
         for iter in range(iterations):
             
-            
-            A = torch.linspace(0, self.A_max, self.n_samples).reshape(-1, 1).requires_grad_()  
-            
-            A = torch.cat((A, torch.zeros_like(A)), dim=-1)                                    
-                                    
+            a = torch.zeros((self.n_samples, self.n_pipes))
+            idx = torch.randint(0, self.n_pipes, (self.n_samples,))
+            a[torch.arange(self.n_samples),idx] = self.a_max * torch.rand((self.n_samples))
+                                                                        
             self.optimizer.zero_grad()
-            loss = self.loss(A)
+            loss = self.loss(a)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.net.parameters(), max_norm=1.0)
             self.optimizer.step()
@@ -155,13 +140,21 @@ class Model():
         self.net.load_state_dict(torch.load("best_model.pth", weights_only=True))
         self.net.eval()
 
+def loss_(self, a):
+        
+    H = self.net(a)
+        
+    hL = (self.B @ self.S)[None,:None] - self.mv(self.A0.T, H).squeeze(-1)
+    
+
+    q = (torch.sign(hL) * (torch.abs(hL) * self.C[None,:]**(1.852) * self.d[None,:]**(4.871) / 10.667 / self.L[None,:])**(1 / 1.852))
+    loss = self.mse(self.mv(self.A0, q).squeeze(-1) - self.D[None,:] - self.d_leak((self.M @ a.T).T, H))
+    
+    return loss 
 
 def loss_(self, a):
                     
     H, q = self.net(a)
-
-        
-            
     e1 = self.mse(self.mv(self.A0, q) - self.D - self.d_leak(a, H)) 
     e2 = self.mse(self.B @ self.S - self.mv(self.A0.T, H) - self.hL(q))
     

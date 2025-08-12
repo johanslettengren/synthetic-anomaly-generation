@@ -2,21 +2,31 @@ import torch
 import torch.nn as nn
 from scipy.constants import g
 
+import wntr
+import pandas as pd
+import numpy as np
+import copy
+import networkx as nx
+import torch
+from wntr.graphics import plot_network
+import matplotlib.pyplot as plt
+from scipy.sparse import dok_matrix
+
+
 softplus = nn.Softplus()
 relu = nn.ReLU()
 
 
 class Net(nn.Module):
 
-    def __init__(self, layer_sizes, activation, base, U, mask=False, positive=False):
+    def __init__(self, layer_sizes, activation, base, positive=False):
         super().__init__()
         
-        self.U = U
-        self.mask = mask
         self.positive = positive
-        self.base = torch.tensor(base[None,:], dtype=torch.float32)
+        self.base = base[:,None]
         self.activation = {'relu' : nn.ReLU(), 'tanh' : nn.Tanh(), 'sigmoid' : nn.Sigmoid(), 'softplus' : softplus}[activation] 
-        
+        #self.Dmax = nn.Parameter(torch.tensor(0.0), requires_grad=True)
+        self.Dmax = torch.tensor([0.19], dtype=torch.float32)
         
         layer_sizes = layer_sizes
         
@@ -30,24 +40,23 @@ class Net(nn.Module):
         
     def forward(self, x):
         
+        
+        idx = x[...,-1].long()        
+        
         for linear in self.linears[:-1]:
 
             x = self.activation(linear(x))
         x = self.linears[-1](x)
         if self.positive:
             x = softplus(x)
-            
-        if self.mask:
-            idx = x[:,1].long()
-            x = self.U.T[idx] * x
-            
-        return x
+
+        return self.base[idx,:] + x
     
 
-class Model():
+class Model(nn.Module):
     def __init__(self, model_params, net_params):  
-        
-        required_keys = ['A0', 'inv', 'M', 'B', 'a', 'S', 'D', 'L', 'd', 'Cd', 'C', 'rho']
+        super().__init__()
+        required_keys = ['A0', 'inv', 'M', 'B', 'a', 'S', 'demand_idx', 'L', 'd', 'Cd', 'C', 'rho', 'n_samples']
 
         # Assert all required keys are present
         missing = [key for key in required_keys if key not in model_params]
@@ -58,14 +67,16 @@ class Model():
         for key in required_keys:
             setattr(self, key, model_params[key])
             
+        self.D = torch.tensor(model_params['D'], dtype=torch.float32)
             
-        self.n_samples = len(self.a)
-
         self.L = self.L[None,:]
-        self.D = self.D[None,:]
         self.d = self.d[None,:]
         self.C = self.C[None,:]
         self.supply = (self.B @ self.S)[None,:]
+        
+        self.lambda_reg = 0.001
+        
+        self.register_buffer("I", torch.eye(self.A0.shape[1], dtype=self.A0.dtype, device=self.A0.device))
         
         self.n_pipes = self.M.shape[1]
                     
@@ -89,47 +100,123 @@ class Model():
     def mv(self, M, v):
         return (M @ v.T).T
 
+    def loss(self, D, leak_id):
+        
+        demand = torch.zeros(self.n_samples, self.A0.shape[0])
+        demand[:,self.demand_idx] = D
+        
+        
+        idx = leak_id.long()        
+        batch_idx = torch.arange(self.n_samples).unsqueeze(1).expand_as(idx)
+        
+        areas = torch.zeros((self.n_samples, self.n_pipes))
+        areas[batch_idx,idx] = self.a       
     
-    def loss(self, D, idx):
-        
-        self.D[:,[1,3,5]] = D
-        
-        out = torch.clone(self.D)
     
-        input = torch.cat((D, idx), dim=-1)
-        out[:,(6.0+idx).long()] = self.net(input)
+        input = torch.cat((D, leak_id), dim=-1)
         
-        q = self.mv(self.inv.T, out)
+
+        H = self.net(input)
+        
+        
+        hL = self.supply - self.mv(self.A0.T, H)
+        
+        q = torch.sign(hL) * (self.C**(1.852) * self.d**(4.871) * torch.abs(hL) / 10.667 / self.L)**(1 / 1.852)
+        
+        loss = self.mse(self.mv(self.A0, q) - demand - self.d_leak(self.mv(self.M, areas), H))
+        
+        return loss
+    
+    def loss(self, D, leak_id):
+        
+        demand = torch.zeros(self.n_samples, self.A0.shape[0])
+        demand[:,self.demand_idx] = D
+        
+        leakage = torch.zeros(self.n_samples, self.n_pipes)
+        
+        
+        idx = leak_id.long()        
+        batch_idx = torch.arange(self.n_samples).unsqueeze(1).expand_as(idx)
+
+    
+        input = torch.cat((D, leak_id), dim=-1)
+        
+        leakage[batch_idx,idx] = self.net(leak_id)
+        
+        D_full = self.mv(self.M, leakage)+demand
+        q = self.mv(self.inv.T, self.mv(self.M, leakage)+demand) 
         
         hL = self.hL(q)    
         H = self.mv(self.inv, self.supply - hL)
         
+        areas = torch.zeros((self.n_samples, self.n_pipes))
+        areas[batch_idx,idx] = self.a 
         
-        a_full = torch.zeros((self.n_samples, self.n_pipes))
-        a_full[torch.arange(self.n_samples),idx.long()] = self.a
-            
+        loss = self.mse(self.mv(self.A0, q) - demand - self.d_leak(self.mv(self.M, areas), H))
         
-        
-        loss = self.mse(self.mv(self.A0, q) - self.D - self.d_leak(self.mv(self.M, a_full), H))
-        
-        return loss 
+        return loss
+    
+    def loss_(self, D, leak_id):
+        # ---- inputs / bookkeeping ----
+        demand = torch.zeros(self.n_samples, self.A0.shape[0], device=D.device, dtype=D.dtype)
+        demand[:, self.demand_idx] = D
+
+        leakage = torch.zeros(self.n_samples, self.n_pipes, device=D.device, dtype=D.dtype)
+        idx = leak_id.long()
+        batch_idx = torch.arange(self.n_samples, device=D.device).unsqueeze(1).expand_as(idx)
+
+        # predict leakage on the selected edges
+        leakage[batch_idx, idx] = self.net(leak_id)
+
+        # nodal injections y = M*leakage + demand    (shape: [B, n_nodes])
+        y = self.mv(self.M, leakage) + demand
+
+        # ---- stable solve instead of pseudo-inverse ----
+        # L_reg = A0 A0^T + λ I (SPD)
+        L_reg = self.L + self.lambda_reg * self.I
+
+        # solve L_reg * s = y  (batched)
+        s = torch.linalg.solve(L_reg.expand(self.n_samples, -1, -1), y.unsqueeze(-1)).squeeze(-1)  # [B, n_nodes]
+
+        # q = A0^T * L^{-1} * y  ==  s @ A0
+        q = s @ self.A0  # [B, n_pipes]
+
+        # headloss on pipes
+        hL = self.hL(q)
+
+        # H used later: previous code did mv(self.inv, supply - hL) = (supply - hL) @ (A0^+)^T
+        # This equals (supply - hL) @ A0^T @ L^{-1}. Do it with a solve:
+        Z = (self.supply - hL) @ self.A0.T                                # [B, n_nodes]
+        H = torch.linalg.solve(L_reg.expand(self.n_samples, -1, -1), Z.unsqueeze(-1)).squeeze(-1)
+
+        # areas for the leaked pipes
+        areas = torch.zeros((self.n_samples, self.n_pipes), device=D.device, dtype=D.dtype)
+        areas[batch_idx, idx] = self.a
+
+        # mass balance residual with leak demand term
+        residual = self.mv(self.A0, q) - demand - self.d_leak(self.mv(self.M, areas), H)
+
+        loss = self.mse(residual)
+        return loss
+
 
             
     def train(self, iterations, print_interval=100):
         self.steps = []
         self.net.train(True)
-        print(f"{'step':<10} {'loss':<10} {'e1':<10}  {'e2'}")
+        print(f"{'step':<10} {'loss':<10}")
         
         for iter in range(iterations):
             
             
-            idx = torch.randint(self.n_pipes, (1,1), dtype=torch.float32)
-            D = torch.stack((torch.rand((1)), torch.rand((1)), torch.rand((1))), dim=-1)
+            idx = torch.randint(self.n_pipes, (self.n_samples,1), dtype=torch.float32)
+            #D = self.net.Dmax * torch.rand((self.n_samples, self.demand_idx.shape[0]))
+            D = self.D.repeat(self.n_samples, 1)
+            
                                                                         
             self.optimizer.zero_grad()
             loss = self.loss(D, idx)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.net.parameters(), max_norm=1.0)
             self.optimizer.step()
             
             vloss = loss.item()
@@ -142,7 +229,6 @@ class Model():
                     self.bestloss = loss
                     
                     announce = 'New Best!'
-                # {f'{e1:.2e}':<10} {f'{e2:.2e}':<15}                
                 fstring = f"{iter + 1:<10} {f'{vloss:.2e}':<10} {announce}"
                 print(fstring)
                 
@@ -151,85 +237,134 @@ class Model():
         print('Best loss:', self.bestloss)
         self.net.load_state_dict(torch.load("best_model.pth", weights_only=True))
         self.net.eval()
-
-def loss_(self, a):
         
-    H = self.net(a)
         
-    hL = (self.B @ self.S)[None,:None] - self.mv(self.A0.T, H).squeeze(-1)
+def get_model_parameters(wn, results):
     
-
-    q = (torch.sign(hL) * (torch.abs(hL) * self.C[None,:]**(1.852) * self.d[None,:]**(4.871) / 10.667 / self.L[None,:])**(1 / 1.852))
-    loss = self.mse(self.mv(self.A0, q).squeeze(-1) - self.D[None,:] - self.d_leak((self.M @ a.T).T, H))
     
-    return loss 
-
-def loss_(self, a):
-                    
-    H, q = self.net(a)
-    e1 = self.mse(self.mv(self.A0, q) - self.D - self.d_leak(a, H)) 
-    e2 = self.mse(self.B @ self.S - self.mv(self.A0.T, H) - self.hL(q))
+    pipe_names = wn.pipe_name_list
+    n_pipes = len(wn.pipe_name_list)
+    leak_junctions = [f'LEAK-{i}' for i in range(n_pipes)]
     
-    return e1, e2
-
-class GNN(nn.Module):
-
-    def __init__(self, A0, D, B, S, depth, layer_sizes, activation):
-        super().__init__()
-        
-        self.D = D
-        self.A0 = A0
-        self.B = B
-        self.S = S
-        self.depth = depth
-
-        self.node_net = Net(2, layer_sizes, activation)
-        self.edge_net = Net(1, layer_sizes, activation)
-        
-        self.q = nn.Parameter(torch.randn(self.A0.shape[1]))
-
-        
-    def mv(self, M, v):
-        v_ = v.reshape(-1, v.shape[-1])
-        return (M @ v_.T).T.reshape(v.shape[0], v.shape[1], -1)
+    for i, pn in enumerate(pipe_names):
+        wn = wntr.morph.split_pipe(wn, pn, pn + '_B', f'LEAK-{i}')
     
-    def forward(self, H):
-        
-        # H.shape = (n_samples, n_nodes)
+    # Create a clean DiGraph with no multiple edges
+    G = nx.DiGraph()
 
-        q = self.q
+    # Rebuild the graph using pipe start → end as in WNTR
+    for pipe_name in wn.pipe_name_list:
+        pipe = wn.get_link(pipe_name)
+        G.add_edge(pipe.start_node_name, pipe.end_node_name, name=pipe_name)
         
-        m1 = self.A0 @ q - self.D
-        m1 = m1.expand(H.shape)
+    # Build re-ordering of graph edges
+    edges = list(G.edges())
+    edge_order = []
 
-        x = torch.stack((H, m1), dim=-1)
+    for pipe_name in wn.pipe_name_list:
+        pipe = wn.get_link(pipe_name)
+        idx = edges.index((pipe.start_node_name, pipe.end_node_name))
+        edge_order.append(idx)
         
-        # x.shape = (n_samples, n_nodes, 2)
-        
-        H = H.unsqueeze(-1)
-        q = torch.zeros(H.shape[0], self.A0.shape[1], 1)
-        for _ in range(self.depth):
-        
-            H = H + self.node_net(x)
-            # H.shape = (n_samples, n_nodes, 1)
+    edgelist = np.array(edges)[edge_order]
+    
+    # Build re-ordering of graph nodes
+    nodes = list(G.nodes())
+    node_order = []
 
-            mat1 = self.B @ self.S
-            # mat1.shape = n_edges
-            
-            mat2 = self.mv(self.A0.T, H)
-            # mat2.shape = (n_samples, n_edges, 1)
-            m2 = mat1[None,:,None] - mat2
-            
-            # m2.shape = (n_samples, n_edges, 1)
-            q = q + self.edge_net(m2)
-            # q.shape = (n_samples, n_edges, 1)
-            
-            
-            m1 = self.mv(self.A0, q.squeeze(-1)) - self.D[None,:,None]
-            # m1.shape = (n_samples, n_nodes, 1)
-            x = torch.cat((H, m1), dim=-1)
-            # x.shape = (n_samples, n_nodes, 2)
-            
-            
+    for node in wn.node_name_list:
+        idx = nodes.index(node)
+        node_order.append(idx)
+        
+    reservoirs = list(wn.reservoir_name_list)
 
-        return H.squeeze(-1), q.squeeze(-1)
+    idx = [i for i, n in enumerate(wn.node_name_list) if n not in reservoirs]
+    A  = nx.incidence_matrix(G, oriented=True)[:,edge_order][node_order,:]
+
+    A0 = torch.tensor(A[idx,:].toarray(), dtype=torch.float32)
+    
+    
+    # Create mapping matrix M (local leak node idx -> global leak node idx)
+    junction_names = wn.junction_name_list
+    # Map node names to row indices in your reduced incidence matrix A0
+    node_to_index = {n: i for i, n in enumerate(junction_names)}
+
+    M = torch.zeros((len(junction_names), len(leak_junctions)))
+
+    # Set 1 where the leak area should be applied
+    for j, leak_junction in enumerate(leak_junctions):
+        i = node_to_index[leak_junction]
+        M[i, j] = 1.0
+        
+    # Create mapping matrix B (local supply node idx -> global supply pipe idx)
+
+    supply_nodes = wn.reservoir_name_list 
+    supply_nodes = list(supply_nodes) 
+
+    # Create edge-to-start-node mapping
+    edge_start_nodes = [edge[0] for edge in edgelist]
+
+    # Create B matrix (|E| x |supply_nodes|), sparse
+    B = dok_matrix((len(edgelist), len(supply_nodes)), dtype=int)
+
+    for i, (start_node) in enumerate(edge_start_nodes):
+        if start_node in supply_nodes:
+            j = supply_nodes.index(start_node)
+            B[i, j] = 1
+
+    # Convert to CSR format for efficient arithmetic
+    B = torch.tensor(B.toarray(), dtype=torch.float32)
+    
+    D = np.array(results.node['demand'].iloc[0][junction_names].values, dtype=np.float32)
+    demand_idx = D.nonzero()[0]
+    
+    D = D[demand_idx]
+    
+    
+    
+    supply_nodes = wn.reservoir_name_list  # Or include tanks if needed
+
+    # Get heads at each supply node
+    S_values = []
+    for name in supply_nodes:
+        reservoir = wn.get_node(name)
+        head = reservoir.base_head  # This is constant in steady state
+        S_values.append(head)
+
+    S = torch.tensor(S_values, dtype=torch.float32)
+    
+    pipe_names = wn.pipe_name_list 
+
+    # Get length of each pipe (in meters)
+    L = torch.tensor([wn.get_link(name).length for name in pipe_names], dtype=torch.float32)
+
+    # Get diameter of each pipe (in meters)
+    d = torch.tensor([wn.get_link(name).diameter for name in pipe_names], dtype=torch.float32)
+
+    # Get Hazen-Williams roughness coefficients (unitless)
+    C = torch.tensor([wn.get_link(name).roughness for name in pipe_names], dtype=torch.float32)
+
+    inv = torch.linalg.pinv(A0.T)
+    
+    diameter = 1
+    leak_ratio = np.array([0.3])
+    leak_areas = 3.14159 * (diameter*leak_ratio / 2) ** 2
+    
+    model_params = {
+        'A0': A0,
+        'inv' : inv,
+        'M' : M,
+        'B' : B,
+        'a' : torch.tensor(leak_areas, dtype=torch.float32),
+        'demand_idx' : demand_idx,     
+        'S' : S,
+        'D' : D,
+        'd': d,
+        'L': L,
+        'Cd' : 0.75, 
+        'C' : C,
+        'rho' : 1000.0,
+        'n_samples' : 1
+    }
+    
+    return model_params

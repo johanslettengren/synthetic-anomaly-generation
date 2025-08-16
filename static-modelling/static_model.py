@@ -12,21 +12,32 @@ from wntr.graphics import plot_network
 import matplotlib.pyplot as plt
 from scipy.sparse import dok_matrix
 
+import torch.nn.functional as F
+
 
 softplus = nn.Softplus()
 relu = nn.ReLU()
 
 
+def soft_sign(x, s=1e-3):
+    # Smooth sign to avoid nondifferentiability at 0
+    return torch.tanh(x / s)
+
+def pow_clamped(z, p, eps=1e-12):
+    # (z + eps)^p to avoid infinite slope at 0 for p<1
+    return (z + eps).pow(p)
+
+
 class Net(nn.Module):
 
-    def __init__(self, layer_sizes, activation, base, positive=False):
+    def __init__(self, layer_sizes, activation, base=None, positive=False):
         super().__init__()
         
         self.positive = positive
-        self.base = base[:,None]
+        self.base = base[:,None] if base is not None else None
         self.activation = {'relu' : nn.ReLU(), 'tanh' : nn.Tanh(), 'sigmoid' : nn.Sigmoid(), 'softplus' : softplus}[activation] 
         #self.Dmax = nn.Parameter(torch.tensor(0.0), requires_grad=True)
-        self.Dmax = torch.tensor([0.19], dtype=torch.float32)
+        self.Dmax = torch.tensor([0.5], dtype=torch.float32)
         
         layer_sizes = layer_sizes
         
@@ -41,7 +52,7 @@ class Net(nn.Module):
     def forward(self, x):
         
         
-        idx = x[...,-1].long()        
+        #idx = x[...,-1].long()        
         
         for linear in self.linears[:-1]:
 
@@ -49,14 +60,20 @@ class Net(nn.Module):
         x = self.linears[-1](x)
         if self.positive:
             x = softplus(x)
-
-        return self.base[idx,:] + x
+        #self.base[idx,:]
+        return  x
+    
+    def predict(self, x):
+        
+        Q = self.forward(x)
+        
+        Q = Q[...,:Q.shape[-1]//2]
     
 
 class Model(nn.Module):
     def __init__(self, model_params, net_params):  
         super().__init__()
-        required_keys = ['A0', 'inv', 'M', 'B', 'a', 'S', 'demand_idx', 'L', 'd', 'Cd', 'C', 'rho', 'n_samples']
+        required_keys = ['A0', 'inv', 'M', 'B', 'a', 'S', 'demand_idx', 'L', 'd', 'Cd', 'C', 'rho']
 
         # Assert all required keys are present
         missing = [key for key in required_keys if key not in model_params]
@@ -67,8 +84,9 @@ class Model(nn.Module):
         for key in required_keys:
             setattr(self, key, model_params[key])
             
-        self.D = torch.tensor(model_params['D'], dtype=torch.float32)
             
+        
+        #self.D = model_params['D']
         self.L = self.L[None,:]
         self.d = self.d[None,:]
         self.C = self.C[None,:]
@@ -79,6 +97,8 @@ class Model(nn.Module):
         self.register_buffer("I", torch.eye(self.A0.shape[1], dtype=self.A0.dtype, device=self.A0.device))
         
         self.n_pipes = self.M.shape[1]
+        
+        self.n_samples = min([self.n_pipes, model_params['n_samples']])
                     
         self.net = Net(**net_params)        
                 
@@ -91,132 +111,89 @@ class Model(nn.Module):
         self.mse = lambda x : (x**2).mean()
 
     def hL(self, q):
+        # This one is fine (p>1 → slope goes to 0 at 0)
         return torch.sign(q) * 10.667 * self.C**(-1.852) * self.d**(-4.871) * self.L * torch.abs(q)**(1.852)
-    
-    def d_leak(self, a, H):
-        d = self.Cd * a * torch.sqrt(2 * g * relu(H))
-        return d
+
+    def hL_inv(self, x, eps=1e-12, s=1e-3):
+        # Safe inverse: smooth sign and epsilon inside the fractional power
+        K = self.C**(1.852) * self.d**(4.871)
+        den = 10.667 * self.L
+        z = (K * x.abs()) / (den + eps)          # magnitude input
+        mag = pow_clamped(z, 1.0/1.852, eps=eps) # avoid ∞ slope at 0
+        return soft_sign(x, s) * mag             # avoid sign’s hard kink
+
+    def d_leak(self, a, H, eps=1e-12):
+        # Option A: keep ReLU shape but stabilize sqrt near 0
+        return self.Cd * a * torch.sqrt(2 * g * (F.relu(H) + eps))
     
     def mv(self, M, v):
         return (M @ v.T).T
-
-    def loss(self, D, leak_id):
+    
+    def loss_(self,leak_id):
         
         demand = torch.zeros(self.n_samples, self.A0.shape[0])
-        demand[:,self.demand_idx] = D
-        
+        demand[:,self.demand_idx] = self.D.repeat(self.n_samples, 1)
         
         idx = leak_id.long()        
         batch_idx = torch.arange(self.n_samples).unsqueeze(1).expand_as(idx)
-        
-        areas = torch.zeros((self.n_samples, self.n_pipes))
-        areas[batch_idx,idx] = self.a       
-    
-    
-        input = torch.cat((D, leak_id), dim=-1)
-        
-
-        H = self.net(input)
-        
-        
-        hL = self.supply - self.mv(self.A0.T, H)
-        
-        q = torch.sign(hL) * (self.C**(1.852) * self.d**(4.871) * torch.abs(hL) / 10.667 / self.L)**(1 / 1.852)
-        
-        loss = self.mse(self.mv(self.A0, q) - demand - self.d_leak(self.mv(self.M, areas), H))
-        
-        return loss
-    
-    def loss(self, D, leak_id):
-        
-        demand = torch.zeros(self.n_samples, self.A0.shape[0])
-        demand[:,self.demand_idx] = D
-        
-        leakage = torch.zeros(self.n_samples, self.n_pipes)
-        
-        
-        idx = leak_id.long()        
-        batch_idx = torch.arange(self.n_samples).unsqueeze(1).expand_as(idx)
-
-    
-        input = torch.cat((D, leak_id), dim=-1)
-        
-        leakage[batch_idx,idx] = self.net(leak_id)
-        
-        D_full = self.mv(self.M, leakage)+demand
-        q = self.mv(self.inv.T, self.mv(self.M, leakage)+demand) 
-        
-        hL = self.hL(q)    
-        H = self.mv(self.inv, self.supply - hL)
         
         areas = torch.zeros((self.n_samples, self.n_pipes))
         areas[batch_idx,idx] = self.a 
         
-        loss = self.mse(self.mv(self.A0, q) - demand - self.d_leak(self.mv(self.M, areas), H))
-        
+        H = self.net(leak_id)
+        hL = self.supply - self.mv(self.A0.T, H)
+    
+        Q = self.hL_inv(hL)  
+
+        loss = self.mse(self.mv(self.A0, Q) - demand - self.d_leak(self.mv(self.M, areas), H))
+
         return loss
     
-    def loss_(self, D, leak_id):
-        # ---- inputs / bookkeeping ----
-        demand = torch.zeros(self.n_samples, self.A0.shape[0], device=D.device, dtype=D.dtype)
-        demand[:, self.demand_idx] = D
+    
+    def loss(self, D, leak_id):
+        
+        demand = torch.zeros(self.n_samples, self.A0.shape[0])
+        demand[:,self.demand_idx] = D
+        
+        idx = leak_id.long()        
+        batch_idx = torch.arange(self.n_samples).unsqueeze(1).expand_as(idx)
+        
+        areas = torch.zeros((self.n_samples, self.n_pipes))
+        areas[batch_idx,idx] = self.a 
 
-        leakage = torch.zeros(self.n_samples, self.n_pipes, device=D.device, dtype=D.dtype)
-        idx = leak_id.long()
-        batch_idx = torch.arange(self.n_samples, device=D.device).unsqueeze(1).expand_as(idx)
-
-        # predict leakage on the selected edges
-        leakage[batch_idx, idx] = self.net(leak_id)
-
-        # nodal injections y = M*leakage + demand    (shape: [B, n_nodes])
-        y = self.mv(self.M, leakage) + demand
-
-        # ---- stable solve instead of pseudo-inverse ----
-        # L_reg = A0 A0^T + λ I (SPD)
-        L_reg = self.L + self.lambda_reg * self.I
-
-        # solve L_reg * s = y  (batched)
-        s = torch.linalg.solve(L_reg.expand(self.n_samples, -1, -1), y.unsqueeze(-1)).squeeze(-1)  # [B, n_nodes]
-
-        # q = A0^T * L^{-1} * y  ==  s @ A0
-        q = s @ self.A0  # [B, n_pipes]
-
-        # headloss on pipes
-        hL = self.hL(q)
-
-        # H used later: previous code did mv(self.inv, supply - hL) = (supply - hL) @ (A0^+)^T
-        # This equals (supply - hL) @ A0^T @ L^{-1}. Do it with a solve:
-        Z = (self.supply - hL) @ self.A0.T                                # [B, n_nodes]
-        H = torch.linalg.solve(L_reg.expand(self.n_samples, -1, -1), Z.unsqueeze(-1)).squeeze(-1)
-
-        # areas for the leaked pipes
-        areas = torch.zeros((self.n_samples, self.n_pipes), device=D.device, dtype=D.dtype)
-        areas[batch_idx, idx] = self.a
-
-        # mass balance residual with leak demand term
-        residual = self.mv(self.A0, q) - demand - self.d_leak(self.mv(self.M, areas), H)
-
-        loss = self.mse(residual)
-        return loss
-
+    
+        input = torch.cat((D, leak_id), dim=-1)
+        
+        Q = self.net(input)
+        hL = self.hL(Q)  
+        H = self.mv(self.inv, self.supply - hL) 
+        #b = self.mv(self.A0, self.supply - hL)
+        #y = torch.linalg.solve_triangular(self.L_chol, b.T, upper=False)
+        #H = torch.linalg.solve_triangular(self.L_chol.T, y, upper=True).T
+        loss1 = self.mse(self.mv(self.A0, Q) - demand - self.d_leak(self.mv(self.M, areas), H))
+        loss2 = self.mse(self.supply - hL - self.mv(self.A0.T, H))
+        
+        return loss1, loss2
 
             
     def train(self, iterations, print_interval=100):
         self.steps = []
         self.net.train(True)
-        print(f"{'step':<10} {'loss':<10}")
+        print(f"{'step':<10} {'Q-loss':<10} {'H-loss':<10} {'sum-loss':<10}")
         
         for iter in range(iterations):
             
             
-            idx = torch.randint(self.n_pipes, (self.n_samples,1), dtype=torch.float32)
-            #D = self.net.Dmax * torch.rand((self.n_samples, self.demand_idx.shape[0]))
-            D = self.D.repeat(self.n_samples, 1)
+            idx = torch.arange(self.n_samples, dtype=torch.float32).reshape(-1,1)
+            D = self.net.Dmax * torch.rand((self.n_samples, self.demand_idx.shape[0]))
             
                                                                         
             self.optimizer.zero_grad()
-            loss = self.loss(D, idx)
+            loss1, loss2 = self.loss(D, idx)
+            loss = loss1 + loss2
             loss.backward()
+            #all_grads = torch.cat([p.grad.view(-1) for p in self.net.parameters() if p.grad is not None])
+            #print(all_grads)
             self.optimizer.step()
             
             vloss = loss.item()
@@ -229,7 +206,7 @@ class Model(nn.Module):
                     self.bestloss = loss
                     
                     announce = 'New Best!'
-                fstring = f"{iter + 1:<10} {f'{vloss:.2e}':<10} {announce}"
+                fstring = f"{iter + 1:<10} {f'{loss1.item():.2e}':<10} {f'{loss2.item():.2e}':<10} {f'{vloss:.2e}':<10} {announce}"
                 print(fstring)
                 
         
@@ -239,11 +216,12 @@ class Model(nn.Module):
         self.net.eval()
         
         
-def get_model_parameters(wn, results):
+def get_model_parameters(wn):
     
     
     pipe_names = wn.pipe_name_list
     n_pipes = len(wn.pipe_name_list)
+    non_leak_junction_names = wn.junction_name_list
     leak_junctions = [f'LEAK-{i}' for i in range(n_pipes)]
     
     for i, pn in enumerate(pipe_names):
@@ -315,10 +293,10 @@ def get_model_parameters(wn, results):
     # Convert to CSR format for efficient arithmetic
     B = torch.tensor(B.toarray(), dtype=torch.float32)
     
-    D = np.array(results.node['demand'].iloc[0][junction_names].values, dtype=np.float32)
-    demand_idx = D.nonzero()[0]
+    # D_np = np.array(results.node['demand'].iloc[0][non_leak_junction_names].values, dtype=np.float32)
+    # demand_idx = D_np.nonzero()[0]
     
-    D = D[demand_idx]
+    # D = torch.tensor(D_np[demand_idx], dtype=torch.float32)
     
     
     
@@ -350,21 +328,25 @@ def get_model_parameters(wn, results):
     leak_ratio = np.array([0.3])
     leak_areas = 3.14159 * (diameter*leak_ratio / 2) ** 2
     
+    
+    #L_mat = A0 @ A0.T
+    #L_chol = torch.linalg.cholesky(L_mat)
+    
     model_params = {
         'A0': A0,
         'inv' : inv,
         'M' : M,
         'B' : B,
         'a' : torch.tensor(leak_areas, dtype=torch.float32),
-        'demand_idx' : demand_idx,     
+        #'demand_idx' : demand_idx,     
         'S' : S,
-        'D' : D,
+        #'D' : D,
         'd': d,
         'L': L,
         'Cd' : 0.75, 
         'C' : C,
         'rho' : 1000.0,
-        'n_samples' : 1
+        'n_samples' : 10
     }
     
     return model_params

@@ -1,0 +1,158 @@
+; Filename: medium_net.inp
+; WNTR: 1.3.2
+; Created: 2025-08-19 18:44:29
+[TITLE]
+
+[JUNCTIONS]
+;ID                      Elevation       Demand Pattern                 
+ 1                                  0               0                            ;
+ 2                                  0            1000                            ;
+ 3                                  0            1000                            ;
+ 4                                  0             500                            ;
+ 5                                  0               0                            ;
+ 6                                  0            1000                            ;
+ LEAK-8                             0               0                            ;
+
+[RESERVOIRS]
+;ID                                   Head                  Pattern
+ RESERVOIR                        191                            ;
+
+[TANKS]
+;ID                              Elevation           Init Level            Min Level            Max Level             Diameter           Min Volume Volume Curve         Overflow            
+
+[PIPES]
+;ID                   Node1                Node2                              Length             Diameter            Roughness           Minor Loss               Status
+ P1                   RESERVOIR            1                                610             900              92               0                 Open   ;
+ P2                   1                    3                                914             750             107               0                 Open   ;
+ P3                   1                    2                                610             600              98               0                 Open   ;
+ P4                   3                    4                                457             450             105               0                 Open   ;
+ P5                   3                    2                                549             450             100               0                 Open   ;
+ P6                   5                    2                                671             750              93               0                 Open   ;
+ P9                   2                    4                                488             450             140               0                 Open   ;
+ P8                   4                    5                                457             600             105               0                 Open   ;
+ P7                   5                    LEAK-8                           500             900             105               0                 Open   ;
+ virt-P7              LEAK-8               6                                500             900             105               0                 Open   ;
+
+[PUMPS]
+;ID                   Node1                Node2                Properties          
+
+[VALVES]
+;ID                   Node1                Node2                            Diameter Type              Setting           Minor Loss
+
+[TAGS]
+;type      name       tag       
+
+[DEMANDS]
+;ID        Demand     Pattern   
+
+[STATUS]
+;ID        Setting   
+
+[PATTERNS]
+;ID        Multipliers
+
+[CURVES]
+;ID         X-Value      Y-Value     
+
+[CONTROLS]
+
+[RULES]
+
+[ENERGY]
+GLOBAL EFFICIENCY      75.0000
+GLOBAL PRICE           0.0000
+DEMAND CHARGE          0.0000
+
+[EMITTERS]
+;ID        Flow coefficient
+LEAK-8     190.17525562936578
+
+[QUALITY]
+
+[SOURCES]
+;Node      Type       Quality    Pattern   
+
+[REACTIONS]
+;Type           Pipe/Tank               Coefficient
+
+ ORDER BULK 1
+ ORDER TANK 1
+ ORDER WALL 1
+ GLOBAL BULK 0.0000    
+ GLOBAL WALL 0.0000    
+ LIMITING POTENTIAL 0.0000    
+ ROUGHNESS CORRELATION 0.0000    
+
+[MIXING]
+;Tank ID             Model Fraction
+
+[TIMES]
+DURATION             00:00:00
+HYDRAULIC TIMESTEP   01:00:00
+QUALITY TIMESTEP     00:05:00
+PATTERN TIMESTEP     01:00:00
+PATTERN START        00:00:00
+REPORT TIMESTEP      01:00:00
+REPORT START         00:00:00
+START CLOCKTIME      00:00:00 AM
+RULE TIMESTEP        00:06:00
+STATISTIC            NONE      
+
+[REPORT]
+SUMMARY    NO
+PAGE       0
+
+[OPTIONS]
+UNITS                LPS                 
+HEADLOSS             H-W                 
+SPECIFIC GRAVITY     1
+VISCOSITY            1
+TRIALS               40
+ACCURACY             0.001
+CHECKFREQ            2
+MAXCHECK             10
+UNBALANCED           CONTINUE 10
+DEMAND MULTIPLIER    1
+EMITTER EXPONENT     0.5
+QUALITY              NONE                
+DIFFUSIVITY          1
+TOLERANCE            0.01
+
+[COORDINATES]
+;Node      X-Coord    Y-Coord   
+1                  87.450000000       6543.210000000
+2                 961.930000000       5658.440000000
+3                1414.360000000       6965.590000000
+4                2361.110000000       6965.020000000
+5                2649.180000000       5658.440000000
+6                3750.550000000       5656.400000000
+RESERVOIR        -529.840000000       7427.980000000
+LEAK-8           3199.865000000       5657.420000000
+
+[VERTICES]
+;Link      X-Coord    Y-Coord   
+
+[LABELS]
+ -149.18          7047.33          "P1"
+ 601.85           6944.44          "P2"
+ 478.40           6296.30          "P3"
+ 1887.86          7170.78          "P4"
+ 992.80           6522.63          "P5"
+ 1774.69          5617.28          "P6"
+ 3184.16          5607.00          "P7"
+ 2582.45          6306.08          "P8"
+ 1620.37          6584.36          "P9"
+ -632.72          7366.26          "R1"
+ -77.16           6481.48          "N3"
+ 1404.32          7201.65          "N4"
+ 2350.82          7160.49          "N6"
+ 859.05           5576.13          "N2"
+ 2677.61          5561.25          "N5"
+ 3667.70          5864.20          "N7"
+
+[BACKDROP]
+DIMENSIONS    0.00    0.00    10000.00    10000.00
+UNITS    NONE
+OFFSET    0.00    0.00
+
+[END]

@@ -1,6 +1,6 @@
 ; Filename: medium_net.inp
 ; WNTR: 1.3.2
-; Created: 2025-08-19 18:44:29
+; Created: 2025-09-18 11:34:06
 [TITLE]
 
 [JUNCTIONS]
@@ -30,8 +30,8 @@
  P6                   5                    2                                671             750              93               0                 Open   ;
  P9                   2                    4                                488             450             140               0                 Open   ;
  P8                   4                    5                                457             600             105               0                 Open   ;
- P7                   5                    LEAK-8                           500             900             105               0                 Open   ;
- virt-P7              LEAK-8               6                                500             900             105               0                 Open   ;
+ P7                   5                    LEAK-8                           900             900             105               0                 Open   ;
+ virt-P7              LEAK-8               6                                100             900             105               0                 Open   ;
 
 [PUMPS]
 ;ID                   Node1                Node2                Properties          
@@ -127,7 +127,7 @@ TOLERANCE            0.01
 5                2649.180000000       5658.440000000
 6                3750.550000000       5656.400000000
 RESERVOIR        -529.840000000       7427.980000000
-LEAK-8           3199.865000000       5657.420000000
+LEAK-8           3640.413000000       5656.604000000
 
 [VERTICES]
 ;Link      X-Coord    Y-Coord   

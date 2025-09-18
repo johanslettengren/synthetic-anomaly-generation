@@ -1,137 +1,114 @@
 import wntr
-import numpy as np
 import networkx as nx
 import torch
-from scipy.sparse import dok_matrix
+
+DEFAULT_CD = 0.75
+DEFAULT_RHO = 1000.0
 
 
-
-def get_model_parameters(wn):
-    
-    
-    pipe_names = wn.pipe_name_list
-    n_pipes = len(wn.pipe_name_list)
-    leak_junctions = [f'LEAK-{i}' for i in range(n_pipes)]
-    
-    for i, pn in enumerate(pipe_names):
-        wn = wntr.morph.split_pipe(wn, pn, pn + '_B', f'LEAK-{i}')
-    
-    # Create a clean DiGraph with no multiple edges
-    G = nx.DiGraph()
-
-    # Rebuild the graph using pipe start → end as in WNTR
-    for pipe_name in wn.pipe_name_list:
-        pipe = wn.get_link(pipe_name)
-        G.add_edge(pipe.start_node_name, pipe.end_node_name, name=pipe_name)
+class ModelParameters:
+    def __init__(self, wn : wntr.network.WaterNetworkModel):
         
-    # Build re-ordering of graph edges
-    edges = list(G.edges())
-    edge_order = []
-
-    for pipe_name in wn.pipe_name_list:
-        pipe = wn.get_link(pipe_name)
-        idx = edges.index((pipe.start_node_name, pipe.end_node_name))
-        edge_order.append(idx)
+        # List of named pipes in netowrk (before adding leak junctions)
+        self.pipe_names = wn.pipe_name_list
         
-    edgelist = np.array(edges)[edge_order]
-    
-    # Build re-ordering of graph nodes
-    nodes = list(G.nodes())
-    node_order = []
-
-    for node in wn.node_name_list:
-        idx = nodes.index(node)
-        node_order.append(idx)
+        # Number of pipes in network
+        self.n_pipes = len(wn.pipe_name_list)
         
-    reservoirs = list(wn.reservoir_name_list)
-
-    idx = [i for i, n in enumerate(wn.node_name_list) if n not in reservoirs]
-    A  = nx.incidence_matrix(G, oriented=True)[:,edge_order][node_order,:]
-
-    A0 = torch.tensor(A[idx,:].toarray(), dtype=torch.float32)
-    
-    
-    # Create mapping matrix M (local leak node idx -> global leak node idx)
-    junction_names = wn.junction_name_list
-    # Map node names to row indices in your reduced incidence matrix A0
-    node_to_index = {n: i for i, n in enumerate(junction_names)}
-
-    M = torch.zeros((len(junction_names), len(leak_junctions)))
-
-    # Set 1 where the leak area should be applied
-    for j, leak_junction in enumerate(leak_junctions):
-        i = node_to_index[leak_junction]
-        M[i, j] = 1.0
+        # List of names of (artificial) leak junctions
+        self.leak_junctions = [f'LEAK-{i}' for i in range(self.n_pipes)]
         
-    # Create mapping matrix B (local supply node idx -> global supply pipe idx)
+        # Add (artificial) leak junctions - split pipes
+        for i, pn in enumerate(self.pipe_names):
+            wn = wntr.morph.split_pipe(wn, pn, pn + '_B', f'LEAK-{i}')
+            
+        self.wn = wn
+        
+        # List of junction names in network
+        self.junction_names = self.wn.junction_name_list
+        
+        # Number of pipes in network
+        self.n_pipes = len(wn.pipe_name_list)
+        
+        # List of reservoir names
+        self.reservoirs = wn.reservoir_name_list 
+                
+        # List of edges in DiGraph
+        self.edgelist = [(pipe.start_node_name, pipe.end_node_name) for _, pipe in wn.pipes()]
+        
+        self.G = self.build_DiGraph()
+        self.M = self.build_M_matrix()
+        self.B = self.build_B_matrix()
+        self.S = self.build_S_vector()  
+            
+        # indices of non-reservoir junctions
+        non_reservoir_idx = [i for i, n in enumerate(wn.node_name_list) if n not in self.reservoirs]
 
-    supply_nodes = wn.reservoir_name_list 
-    supply_nodes = list(supply_nodes) 
+        # Incidence matrix
+        A  = nx.incidence_matrix(self.G, nodelist=wn.node_name_list, edgelist=self.edgelist, oriented=True)
+        
+        # Reduced incidence matrix (no reservoir rows)
+        self.A0 = torch.tensor(A[non_reservoir_idx,:].toarray(), dtype=torch.float32)
+        
+        # Get length of each pipe (in meters)
+        self.L = torch.tensor([pipe.length for _, pipe in self.wn.pipes()], dtype=torch.float32)
+     
+        # Get diameter of each pipe (in meters)
+        self.d = torch.tensor([pipe.diameter for _, pipe in self.wn.pipes()], dtype=torch.float32)
+        
+        # Get elevations
+        self.elev = torch.tensor([wn.get_node(name).elevation for name in self.junction_names], dtype=torch.float32)
+        
+        # Get Hazen-Williams roughness coefficients (unitless)
+        self.C = torch.tensor([pipe.roughness for _, pipe in self.wn.pipes()], dtype=torch.float32)
 
-    # Create edge-to-start-node mapping
-    edge_start_nodes = [edge[0] for edge in edgelist]
+        # Pre-compute pseudo-inverse of reduced incidence matrix
+        self.inv = torch.linalg.pinv(self.A0.T)
+        
 
-    # Create B matrix (|E| x |supply_nodes|), sparse
-    B = dok_matrix((len(edgelist), len(supply_nodes)), dtype=int)
+    def build_DiGraph(self) -> nx.DiGraph:
+        """Create a clean DiGraph with no multiple edges"""
+        G = nx.DiGraph()
+        for pipe_name, pipe in self.wn.pipes():
+            G.add_edge(pipe.start_node_name, pipe.end_node_name, name=pipe_name)
+        
+        return G
 
-    for i, (start_node) in enumerate(edge_start_nodes):
-        if start_node in supply_nodes:
-            j = supply_nodes.index(start_node)
-            B[i, j] = 1
+    def build_M_matrix(self) -> torch.tensor:
+        """Create mapping matrix M (local leak node index to global leak node index)"""
+        
+        node_to_index = {n: i for i, n in enumerate(self.junction_names)}
+        M = torch.zeros((len(self.junction_names), len(self.leak_junctions)), dtype=torch.float32)
+        for j, leak_junction in enumerate(self.leak_junctions):
+            M[node_to_index[leak_junction], j] = 1.0
+            
+        return M
 
-    # Convert to CSR format for efficient arithmetic
-    B = torch.tensor(B.toarray(), dtype=torch.float32)
+    def build_B_matrix(self) -> torch.tensor:
+        """Build matrix B (local supply node idx to global supply pipe idx)"""
+        
+        B = torch.zeros((len(self.edgelist), len(self.reservoirs)), dtype=torch.float32)
+        for i, edge in enumerate(self.edgelist):
+            if edge[0] in self.reservoirs:
+                B[i, self.reservoirs.index(edge[0])] = 1.0
+        return B
     
-    # D_np = np.array(results.node['demand'].iloc[0][non_leak_junction_names].values, dtype=np.float32)
-    # demand_idx = D_np.nonzero()[0]
+    def build_S_vector(self) -> torch.tensor:
+        """Get vector of heads at reservoirs"""
+        S_values = []
+        for name in self.reservoirs:
+            reservoir = self.wn.get_node(name)
+            head = reservoir.base_head  # This is constant in steady state
+            S_values.append(head)
+        S = torch.tensor(S_values, dtype=torch.float32)
+                
+        return S
     
-    # D = torch.tensor(D_np[demand_idx], dtype=torch.float32)
-    
-    
-    
-    supply_nodes = wn.reservoir_name_list  # Or include tanks if needed
 
-    # Get heads at each supply node
-    S_values = []
-    for name in supply_nodes:
-        reservoir = wn.get_node(name)
-        head = reservoir.base_head  # This is constant in steady state
-        S_values.append(head)
-
-    S = torch.tensor(S_values, dtype=torch.float32)
-    
-    pipe_names = wn.pipe_name_list 
-
-    # Get length of each pipe (in meters)
-    L = torch.tensor([wn.get_link(name).length for name in pipe_names], dtype=torch.float32)
-
-    # Get diameter of each pipe (in meters)
-    d = torch.tensor([wn.get_link(name).diameter for name in pipe_names], dtype=torch.float32)
-
-    # Get Hazen-Williams roughness coefficients (unitless)
-    C = torch.tensor([wn.get_link(name).roughness for name in pipe_names], dtype=torch.float32)
-
-    inv = torch.linalg.pinv(A0.T)
-    
-    
-    #L_mat = A0 @ A0.T
-    #L_chol = torch.linalg.cholesky(L_mat)
-    
-    model_params = {
-        'A0': A0,
-        'inv' : inv,
-        'M' : M,
-        'B' : B,
-        #'a' : leak_areas,
-        #'demand_idx' : demand_idx,     
-        'S' : S,
-        #'D' : D,
-        'd': d,
-        'L': L,
-        'Cd' : 0.75, 
-        'C' : C,
-        'rho' : 1000.0,
-        'n_samples' : n_pipes,
+def get_model_parameters(wn, Cd=DEFAULT_CD, rho=DEFAULT_RHO):
+    mp = ModelParameters(wn)
+    return {
+        'A0': mp.A0, 'inv': mp.inv, 'M': mp.M, 'B': mp.B, 'S': mp.S,
+        'd': mp.d, 'L': mp.L, 'elev': mp.elev, 'Cd': Cd, 'C': mp.C, 'rho': rho,
+        'edgelist': mp.edgelist, 'junctions': mp.junction_names, 'reservoirs': mp.reservoirs,
     }
-    
-    return model_params

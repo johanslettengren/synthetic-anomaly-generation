@@ -1,17 +1,17 @@
-; Filename: medium_net.inp
+; Filename: /Users/johanslettengren/Desktop/KTH/Digital_Futures/synthetic-anomaly-generation/data/medium_net.inp
 ; WNTR: 1.3.2
-; Created: 2025-09-18 11:34:06
+; Created: 2025-09-18 12:12:46
 [TITLE]
 
 [JUNCTIONS]
 ;ID                      Elevation       Demand Pattern                 
  1                                  0               0                            ;
- 2                                  0            1000                            ;
- 3                                  0            1000                            ;
+ 2                                  0               0                            ;
+ 3                                  0             500                            ;
  4                                  0             500                            ;
  5                                  0               0                            ;
- 6                                  0            1000                            ;
- LEAK-8                             0               0                            ;
+ 6                                  0               0                            ;
+ LEAK-7                             0               0                            ;
 
 [RESERVOIRS]
 ;ID                                   Head                  Pattern
@@ -29,9 +29,9 @@
  P5                   3                    2                                549             450             100               0                 Open   ;
  P6                   5                    2                                671             750              93               0                 Open   ;
  P9                   2                    4                                488             450             140               0                 Open   ;
- P8                   4                    5                                457             600             105               0                 Open   ;
- P7                   5                    LEAK-8                           900             900             105               0                 Open   ;
- virt-P7              LEAK-8               6                                100             900             105               0                 Open   ;
+ P8                   4                    LEAK-7                         365.6             600             105               0                 Open   ;
+ P7                   5                    6                               1000             900             105               0                 Open   ;
+ virt-P8              LEAK-7               5                               91.4             600             105               0                 Open   ;
 
 [PUMPS]
 ;ID                   Node1                Node2                Properties          
@@ -65,7 +65,7 @@ DEMAND CHARGE          0.0000
 
 [EMITTERS]
 ;ID        Flow coefficient
-LEAK-8     190.17525562936578
+LEAK-7     84.52233583527365
 
 [QUALITY]
 
@@ -127,7 +127,7 @@ TOLERANCE            0.01
 5                2649.180000000       5658.440000000
 6                3750.550000000       5656.400000000
 RESERVOIR        -529.840000000       7427.980000000
-LEAK-8           3640.413000000       5656.604000000
+LEAK-7           2591.566000000       5919.756000000
 
 [VERTICES]
 ;Link      X-Coord    Y-Coord   

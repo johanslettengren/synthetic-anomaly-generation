@@ -7,8 +7,8 @@ import time
 from scipy.constants import g
 import pandas as pd
 
-from model import *
-from config import *
+from .model import Model
+from .config import get_model_parameters
 
 
 
